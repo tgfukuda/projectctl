@@ -1,0 +1,7 @@
+.cursorindexingignore
+# SpecStory explanation file
+.specstory/.what-is-this.md
+.specstory/
+
+.projectctl/
+node_modules/
