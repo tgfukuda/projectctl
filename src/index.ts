@@ -1,14 +1,17 @@
 #!/usr/bin/env ts-node
-import { spawn } from "child_process";
+import { exec, spawn } from "child_process";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
+import { setTimeout } from "timers/promises";
 
 type Project = {
     urls: string[];
     workdir: string;
     apps: string[];
     browser?: keyof typeof BROWSERS;
+    tabBehavior?: "restore" | "clean";
+    wait?: number; // in seconds
 };
 
 const BROWSERS = {
@@ -52,24 +55,94 @@ async function main() {
         }
 
         if (project.urls.length > 0) {
+            const profileDir = path.join(os.homedir(), ".cache/projectctl", projectName);
             const browser = project.browser ?? "brave";
-            pids.push(
-                spawn(BROWSERS[browser],
-                    [
-                        browser === "brave" ? "--disable-brave-sync" : "",
-                        browser === "safari" ? "" : "--new-window",
-                        ...project.urls
-                    ], { detached: true }).pid!
-            );
+            
+            const browserArgs = [
+                browser === "brave" ? "--disable-brave-sync" : "",
+                browser === "safari" ? "" : "--new-window",
+                browser === "chrome" || browser === "brave" ? `--user-data-dir=${profileDir}` : "",
+            ];
+
+            const tabBehavior = project.tabBehavior ?? "restore";
+            
+            if (tabBehavior === "clean") {
+                if (browser === "firefox") {
+                    browserArgs.push("--new-instance");
+                } else if (browser === "chrome" || browser === "brave" || browser === "edge") {
+                    browserArgs.push("--no-restore-session-state");
+                } else if (browser === "opera" || browser === "vivaldi") {
+                    browserArgs.push("--no-session-restore");
+                }
+            } else if (tabBehavior === "restore") {
+                if (browser === "firefox") {
+                    browserArgs.push("--restore-last-session");
+                } else if (browser === "chrome" || browser === "brave" || browser === "edge") {
+                    browserArgs.push("--restore-last-session");
+                } else if (browser === "opera" || browser === "vivaldi") {
+                    browserArgs.push("--session-restore");
+                }
+            }
+            
+            let urlsToOpen = [...project.urls];
+            try {
+                const profileExists = await fs.access(profileDir).then(() => true).catch(() => false);
+                
+                if (tabBehavior === "restore" && profileExists) {
+                    urlsToOpen = [];
+                }
+            } catch (error) {
+                console.warn(`Failed to check profile directory: ${error}`);
+            }
+            
+            const browserProcess = spawn(BROWSERS[browser], [...browserArgs, ...urlsToOpen], { 
+                detached: true,
+                stdio: 'ignore'
+            });
+            
+            if (browserProcess.pid) {
+                pids.push(browserProcess.pid);
+                browserProcess.unref();
+            }
         }
 
-        // Extra apps
-        for (const app of project.apps) {
-            pids.push(spawn(app, [], { detached: true }).pid!);
+        if (project.apps.length > 0) {
+            const appPromises = project.apps.map(appCommand => {
+                return new Promise<number>((resolve, reject) => {
+                    try {
+                        console.log(`Starting app: ${appCommand}`);
+                        const child = exec(appCommand);
+                        
+                        if (child.pid) {
+                            pids.push(child.pid);
+                            child.unref();
+                            resolve(child.pid);
+                        } else {
+                            reject(new Error(`Failed to get PID for: ${appCommand}`));
+                        }
+                    } catch (error) {
+                        console.error(`Failed to start app: ${appCommand}`, error);
+                        reject(error);
+                    }
+                });
+            });
+            
+            (await Promise.allSettled(appPromises)).forEach(result => {
+                if (result.status === "fulfilled") {
+                    console.log(`App started: ${result.value}`);
+                } else {
+                    console.error(`App failed to start: ${result.reason}`);
+                }
+            });
         }
 
-        await fs.writeFile(pidfile, pids.join(" "));
+        await fs.writeFile(pidfile, pids.join("\n"), "utf8");
         console.log("Started:", projectName);
+
+        const wait = project.wait ?? 30;
+        console.log("Waiting for", wait, "seconds for the app to be ready...");
+        await setTimeout(wait * 1000);
+        process.exit(0);
     } else if (action === "stop") {
         try {
             const data = await fs.readFile(pidfile, "utf8");
