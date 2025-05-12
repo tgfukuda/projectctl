@@ -74,12 +74,24 @@ async function main() {
         try {
             const data = await fs.readFile(pidfile, "utf8");
             for (const pid of data.split(/\s+/).filter(Boolean)) {
-                process.kill(Number(pid), "SIGTERM");
+                try {
+                    process.kill(Number(pid), "SIGTERM");
+                } catch (killErr) {
+                    if (killErr instanceof Error && killErr.message.includes('ESRCH')) {
+                        console.warn(`Process ID ${pid} is already stopped`);
+                    } else {
+                        throw killErr;
+                    }
+                }
             }
             await fs.unlink(pidfile);
             console.log("Stopped:", projectName);
-        } catch {
-            console.warn("pidfile not found; already stopped?");
+        } catch (err) {
+            if (err instanceof Error && err.message.includes("No such file or directory")) {
+                console.warn("pidfile not found; already stopped?");
+            } else {
+                throw err;
+            }
         }
     } else {
         console.error("Action must be start or stop");
