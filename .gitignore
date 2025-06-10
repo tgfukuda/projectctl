@@ -5,3 +5,4 @@
 
 .projectctl/
 node_modules/
+dist/

@@ -1,166 +1,123 @@
 #!/usr/bin/env ts-node
-import { exec } from "child_process";
-import { promises as fs } from "fs";
-import process from "process";
-import { setTimeout } from "timers/promises";
+import { Command } from 'commander';
+import { editConfig, listProjects, startProject, stopProject, validateConfig } from './commands';
 
-import { createBrowser } from "./browser";
-import { Config, CONFIG_PATHS, ConfigManager, ProjectConfig } from "./config";
-import { EditorType, openEditor } from "./editor";
+const program = new Command();
 
-async function main() {
-    // コマンドライン引数を解析
-    const [,, action, projectName] = process.argv;
-    if (!action || !projectName) {
-        console.error("使用法: projectctl {start|stop} <project>");
-        process.exit(1);
-    }
+program.name('projectctl').description('プロジェクト環境の自動起動・管理ツール').version('1.0.0');
 
+// プロジェクト起動コマンド
+program
+  .command('start')
+  .description('プロジェクトを起動します')
+  .argument('<project-name>', '起動するプロジェクト名')
+  .option('-f, --force', '強制的に起動（既存のプロセスを終了）')
+  .option('-d, --debug', 'デバッグモードで起動')
+  .action(async (projectName: string, options: { force?: boolean; debug?: boolean }) => {
     try {
-        // 設定ディレクトリを初期化
-        await fs.mkdir(CONFIG_PATHS.pidDir, { recursive: true });
-
-        // プロジェクト設定を読み込む
-        const config = await ConfigManager.loadProjects();
-        
-        if (!config.projects || !config.projects[projectName]) {
-            console.error(`プロジェクト '${projectName}' が見つかりません`);
-            process.exit(1);
-        }
-        
-        const project = config.projects[projectName];
-        const globalConfig = config.global || {};
-
-        if (action === "start") {
-            await stopProject(projectName);
-            await startProject(projectName, project, globalConfig);
-        } else if (action === "stop") {
-            await stopProject(projectName);
-        } else {
-            console.error("アクションは start または stop である必要があります");
-            process.exit(1);
-        }
+      await startProject(projectName, options);
     } catch (error) {
-        console.error("エラーが発生しました:", error);
-        process.exit(1);
+      console.error('プロジェクトの起動に失敗しました:', error);
+      process.exit(1);
     }
-}
+  });
 
-/**
- * プロジェクトを起動する
- */
-async function startProject(
-    projectName: string, 
-    projectConfig: ProjectConfig,
-    globalConfig: Config["global"]
-) {
-    const pids: number[] = [];
-    
-    // エディタを起動
-    if (projectConfig.workdir) {
-        const editorType = globalConfig?.editor as EditorType || "cursor";
-        const editorPid = openEditor(projectConfig, projectName, editorType);
-        if (editorPid) {
-            pids.push(editorPid);
-        }
-    }
-    
-    // ブラウザを起動
-    if (projectConfig.urls && projectConfig.urls.length > 0) {
-        const browser = createBrowser(projectConfig, projectName);
-        const browserPid = await browser.launch();
-        if (browserPid) {
-            pids.push(browserPid);
-        }
-    }
-    
-    // アプリケーションを起動
-    if (projectConfig.apps && projectConfig.apps.length > 0) {
-        const appPromises = projectConfig.apps.map(appCommand => {
-            return new Promise<number>((resolve, reject) => {
-                try {
-                    console.log(`アプリを起動: ${appCommand}`);
-                    const child = exec(appCommand);
-                    
-                    if (child.pid) {
-                        pids.push(child.pid);
-                        child.unref();
-                        resolve(child.pid);
-                    } else {
-                        reject(new Error(`PIDの取得に失敗: ${appCommand}`));
-                    }
-                } catch (error) {
-                    console.error(`アプリの起動に失敗: ${appCommand}`, error);
-                    reject(error);
-                }
-            });
-        });
-        
-        // すべてのアプリ起動処理の結果を待機
-        (await Promise.allSettled(appPromises)).forEach(result => {
-            if (result.status === "fulfilled") {
-                console.log(`アプリが起動しました: PID ${result.value}`);
-            } else {
-                console.error(`アプリの起動に失敗しました: ${result.reason}`);
-            }
-        });
-    }
-    
-    // PIDを保存
-    if (pids.length > 0) {
-        await ConfigManager.savePids(projectName, pids);
-        console.log(`プロジェクト '${projectName}' を起動しました（PID: ${pids.join(', ')}）`);
-    } else {
-        console.warn(`プロジェクト '${projectName}' で起動したプロセスはありません`);
-    }
-    
-    // 待機処理
-    const wait = projectConfig.wait ?? globalConfig?.wait ?? 30;
-    console.log(`アプリケーションの準備のため ${wait} 秒間待機中...`);
-    await setTimeout(wait * 1000);
-}
-
-/**
- * プロジェクトを停止する
- */
-async function stopProject(projectName: string) {
+// プロジェクト停止コマンド
+program
+  .command('stop')
+  .description('プロジェクトを停止します')
+  .argument('<project-name>', '停止するプロジェクト名')
+  .option('-f, --force', '強制的に停止')
+  .action(async (projectName: string, options: { force?: boolean }) => {
     try {
-        // PIDファイルからプロセスIDを読み込む
-        const pids = await ConfigManager.loadPids(projectName);
-        
-        if (pids.length === 0) {
-            console.warn(`プロジェクト '${projectName}' の実行中プロセスが見つかりません`);
-            return;
-        }
-        
-        // 各プロセスを終了
-        for (const pid of pids) {
-            try {
-                process.kill(pid, "SIGTERM");
-                console.log(`プロセス ${pid} を終了しました`);
-            } catch (error) {
-                if (error instanceof Error && error.message.includes('ESRCH')) {
-                    console.warn(`プロセス ${pid} は既に終了しています`);
-                } else {
-                    console.error(`プロセス ${pid} の終了中にエラーが発生しました:`, error);
-                }
-            }
-        }
-        
-        // PIDファイルを削除
-        const pidFile = ConfigManager.getPidFilePath(projectName);
-        await fs.unlink(pidFile);
-        console.log(`プロジェクト '${projectName}' を停止しました`);
+      await stopProject(projectName, options);
     } catch (error) {
-        if (error instanceof Error && error.message.includes("ENOENT")) {
-            console.warn("PIDファイルが見つかりません。プロジェクトは既に停止している可能性があります。");
-        } else {
-            throw error;
-        }
+      console.error('プロジェクトの停止に失敗しました:', error);
+      process.exit(1);
     }
-}
+  });
 
-// メインエントリーポイント
-if (require.main === module) {
-    main().catch(console.error);
-}
+// プロジェクト一覧コマンド
+program
+  .command('list')
+  .description('プロジェクトの一覧を表示します')
+  .option('-a, --all', 'すべてのプロジェクトを表示')
+  .option('-s, --status', '実行状態も表示')
+  .action(async (options: { all?: boolean; status?: boolean }) => {
+    try {
+      await listProjects(options);
+    } catch (error) {
+      console.error('プロジェクト一覧の取得に失敗しました:', error);
+      process.exit(1);
+    }
+  });
+
+// 設定編集コマンド
+program
+  .command('edit')
+  .description('設定ファイルを編集します')
+  .option('-f, --file <path>', '編集する設定ファイルのパス')
+  .action(async (options: { file?: string }) => {
+    try {
+      await editConfig(options);
+    } catch (error) {
+      console.error('設定の編集に失敗しました:', error);
+      process.exit(1);
+    }
+  });
+
+// 設定検証コマンド
+program
+  .command('validate')
+  .description('設定ファイルを検証します')
+  .option('-f, --file <path>', '検証する設定ファイルのパス')
+  .action(async (options: { file?: string }) => {
+    try {
+      await validateConfig(options);
+    } catch (error) {
+      console.error('設定の検証に失敗しました:', error);
+      process.exit(1);
+    }
+  });
+
+// 設定初期化コマンド
+program
+  .command('init')
+  .description('新しい設定ファイルを作成します')
+  .option('-t, --template <name>', '使用するテンプレート名')
+  .action(async (_: { template?: string }) => {
+    try {
+      // TODO: 実装
+      console.log('設定の初期化機能は未実装です');
+    } catch (error) {
+      console.error('設定の初期化に失敗しました:', error);
+      process.exit(1);
+    }
+  });
+
+// ヘルプコマンドのカスタマイズ
+program.addHelpText(
+  'after',
+  `
+使用例:
+  $ projectctl start my-project
+  $ projectctl stop my-project
+  $ projectctl list
+  $ projectctl edit
+  $ projectctl validate
+  $ projectctl init
+
+詳細な情報は https://github.com/yourusername/projectctl を参照してください。
+`
+);
+
+// エラーハンドリング
+program.configureOutput({
+  writeOut: (str) => process.stdout.write(str),
+  writeErr: (str) => process.stderr.write(str),
+  getOutHelpWidth: () => process.stdout.columns || 80,
+  getErrHelpWidth: () => process.stderr.columns || 80,
+});
+
+// コマンドライン引数の解析
+program.parse(process.argv);

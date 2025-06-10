@@ -1,18 +1,19 @@
-import { spawn } from "child_process";
-import os from "os";
-import { ProjectConfig } from "../config";
+import { spawn } from 'child_process';
+import os from 'os';
+import { ProjectConfig } from '../config';
+import logger from '../logger';
 
 // エディタの種類を定義
-export type EditorType = "cursor" | "vscode" | "sublime" | "atom" | "vim" | "emacs";
+export type EditorType = 'cursor' | 'vscode' | 'sublime' | 'atom' | 'vim' | 'emacs';
 
 // エディタコマンドのマッピング
 export const EDITOR_COMMANDS: Record<EditorType, string> = {
-  "cursor": "cursor",
-  "vscode": "code",
-  "sublime": "subl",
-  "atom": "atom",
-  "vim": "vim",
-  "emacs": "emacs",
+  cursor: 'cursor',
+  vscode: 'code',
+  sublime: 'subl',
+  atom: 'atom',
+  vim: 'vim',
+  emacs: 'emacs',
 };
 
 // 抽象エディタクラス
@@ -35,28 +36,24 @@ export abstract class BaseEditor {
    */
   launch(): number | undefined {
     if (!this.projectConfig.workdir) {
-      console.log(`プロジェクト ${this.projectName} にworkdirが設定されていません`);
+      logger.error(`プロジェクト ${this.projectName} にworkdirが設定されていません`);
       return undefined;
     }
 
-    const workdir = this.projectConfig.workdir.replace("~", os.homedir());
-    console.log(this.getEditorCommand(), this.getEditorArgs(workdir));
-    const editorProcess = spawn(
-      this.getEditorCommand(),
-      this.getEditorArgs(workdir),
-      { 
-        detached: true,
-        stdio: 'ignore'
-      }
-    );
+    const workdir = this.projectConfig.workdir.replace('~', os.homedir());
+    logger.debug(`${this.getEditorCommand()} ${this.getEditorArgs(workdir).join(' ')}`);
+    const editorProcess = spawn(this.getEditorCommand(), this.getEditorArgs(workdir), {
+      detached: true,
+      stdio: 'ignore',
+    });
 
     if (editorProcess.pid) {
-      console.log(`${this.getEditorType()} エディタを起動しました: ${workdir}`);
+      logger.info(`${this.getEditorType()} エディタを起動しました: ${workdir}`);
       editorProcess.unref();
       return editorProcess.pid;
     }
 
-    console.error(`${this.getEditorType()} エディタの起動に失敗しました`);
+    logger.error(`${this.getEditorType()} エディタの起動に失敗しました`);
     return undefined;
   }
 }
@@ -64,7 +61,7 @@ export abstract class BaseEditor {
 // Cursor エディタクラス
 export class CursorEditor extends BaseEditor {
   getEditorType(): EditorType {
-    return "cursor";
+    return 'cursor';
   }
 
   getEditorCommand(): string {
@@ -79,7 +76,7 @@ export class CursorEditor extends BaseEditor {
 // VSCode エディタクラス
 export class VSCodeEditor extends BaseEditor {
   getEditorType(): EditorType {
-    return "vscode";
+    return 'vscode';
   }
 
   getEditorCommand(): string {
@@ -95,12 +92,12 @@ export class VSCodeEditor extends BaseEditor {
 export function createEditor(
   projectConfig: ProjectConfig,
   projectName: string,
-  editorType: EditorType = "cursor"
+  editorType: EditorType = 'cursor'
 ): BaseEditor {
   switch (editorType) {
-    case "cursor":
+    case 'cursor':
       return new CursorEditor(projectConfig, projectName);
-    case "vscode":
+    case 'vscode':
       return new VSCodeEditor(projectConfig, projectName);
     // 他のエディタは必要に応じて実装
     default:
